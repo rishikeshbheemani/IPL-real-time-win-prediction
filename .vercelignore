@@ -1,0 +1,24 @@
+# Training data
+training/
+ipl_data/
+ipl_phase1.csv
+ipl_phase3.csv
+
+# Training / experimentation
+notebooks/
+datasetup.py
+baseline_models.py
+advanced_features.py
+tests/
+
+# Models not used by production LSTM
+models/xgb.pkl
+models/xgb_phase3.pkl
+models/lr.pkl
+models/features_phase3.pkl
+
+# Development
+.venv/
+__pycache__/
+.pytest_cache/
+.env

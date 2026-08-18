@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>IPL Real-Time Win Probability</title>
+<style>
+  :root {
+    --bg: #0b0f14;
+    --card: #131a22;
+    --border: #223041;
+    --text: #e7edf3;
+    --muted: #8a9bb0;
+    --team-a: #38bdf8;
+    --team-b: #fb923c;
+    --error: #f87171;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    display: flex;
+    justify-content: center;
+    padding: 32px 16px;
+  }
+  .app { width: 100%; max-width: 560px; }
+  h1 { font-size: 20px; font-weight: 600; margin-bottom: 4px; }
+  .subtitle { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
+  select, input {
+    width: 100%;
+    background: var(--card);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 10px 12px;
+    border-radius: 8px;
+    font-size: 14px;
+    margin-bottom: 16px;
+  }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+  }
+  .row { display: flex; justify-content: space-between; align-items: baseline; }
+  .team { font-weight: 600; font-size: 15px; }
+  .score { font-size: 22px; font-weight: 700; margin: 2px 0; }
+  .meta { color: var(--muted); font-size: 13px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 16px 0; }
+  .stat-label { color: var(--muted); font-size: 12px; }
+  .stat-value { font-size: 15px; font-weight: 600; }
+  .prob-bar {
+    display: flex;
+    height: 34px;
+    border-radius: 8px;
+    overflow: hidden;
+    margin: 14px 0 6px;
+    border: 1px solid var(--border);
+  }
+  .prob-a { background: var(--team-a); display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; color: #04202e; }
+  .prob-b { background: var(--team-b); display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; color: #2e1503; }
+  .prob-labels { display: flex; justify-content: space-between; font-size: 13px; color: var(--muted); margin-bottom: 18px; }
+  .updated { text-align: right; font-size: 11px; color: var(--muted); }
+  .state { text-align: center; color: var(--muted); padding: 40px 0; font-size: 14px; }
+  .state.error { color: var(--error); }
+  .note { font-size: 12px; color: var(--muted); margin-top: 10px; border-top: 1px solid var(--border); padding-top: 10px; }
+</style>
+</head>
+<body>
+<div class="app">
+  <h1>IPL Real-Time Win Probability</h1>
+  <div class="subtitle">Live win probability from a trained XGBoost model, updated every 20s.</div>
+
+  <select id="matchSelect"><option value="">Loading matches…</option></select>
+
+  <div id="content" class="card"><div class="state">Select a match to see live win probability.</div></div>
+</div>
+
+<script>
+  // Backend base URL. Same-origin on Vercel (frontend + /api on one deployment).
+  // Override for local dev where the API runs on a different port.
+  const API_BASE = window.API_BASE || "";
+  const REFRESH_INTERVAL_MS = 20000;
+
+  const matchSelect = document.getElementById("matchSelect");
+  const content = document.getElementById("content");
+  let pollTimer = null;
+
+  function renderState(html) {
+    content.innerHTML = `<div class="state">${html}</div>`;
+  }
+
+  function renderError(message) {
+    content.innerHTML = `<div class="state error">${message}</div>`;
+  }
+
+  async function loadMatches() {
+    try {
+      const res = await fetch(`${API_BASE}/api/matches`);
+      if (!res.ok) throw new Error(`Failed to load matches (HTTP ${res.status})`);
+      const matches = await res.json();
+
+      matchSelect.innerHTML = "";
+      if (matches.length === 0) {
+        matchSelect.innerHTML = `<option value="">No live matches right now</option>`;
+        renderState("No live IPL matches at the moment. Check back during a match.");
+        return;
+      }
+
+      matchSelect.innerHTML = `<option value="">Select a match…</option>` +
+        matches.map(m => `<option value="${m.match_id}">${m.name}${m.is_live ? " (LIVE)" : ""}</option>`).join("");
+    } catch (err) {
+      matchSelect.innerHTML = `<option value="">Unable to load matches</option>`;
+      renderError(`Could not load matches: ${err.message}`);
+    }
+  }
+
+  async function loadPrediction(matchId) {
+    renderState("Loading prediction…");
+    try {
+      const res = await fetch(`${API_BASE}/api/predict/${encodeURIComponent(matchId)}`);
+      if (res.status === 409) {
+        renderState("Match hasn't reached the second innings yet — no chase to predict.");
+        return;
+      }
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.detail || `HTTP ${res.status}`);
+      }
+      const pred = await res.json();
+      renderPrediction(pred);
+    } catch (err) {
+      renderError(`Prediction unavailable: ${err.message}`);
+    }
+  }
+
+  function renderPrediction(pred) {
+    const aPct = Math.round(pred.team_a_probability * 1000) / 10;
+    const bPct = Math.round(pred.team_b_probability * 1000) / 10;
+    const updated = new Date(pred.timestamp).toLocaleTimeString();
+
+    content.innerHTML = `
+      <div class="row">
+        <div class="team" style="color: var(--team-a)">${pred.team_a}</div>
+        <div class="team" style="color: var(--team-b)">${pred.team_b}</div>
+      </div>
+      <div class="prob-bar">
+        <div class="prob-a" style="width:${aPct}%">${aPct >= 12 ? aPct + "%" : ""}</div>
+        <div class="prob-b" style="width:${bPct}%">${bPct >= 12 ? bPct + "%" : ""}</div>
+      </div>
+      <div class="prob-labels"><span>${aPct}% win</span><span>${bPct}% win</span></div>
+      ${pred.notes ? `<div class="note">${pred.notes}</div>` : ""}
+      <div class="updated">Last updated ${updated} · model: ${pred.model}</div>
+    `;
+  }
+
+  matchSelect.addEventListener("change", () => {
+    if (pollTimer) clearInterval(pollTimer);
+    const matchId = matchSelect.value;
+    if (!matchId) {
+      renderState("Select a match to see live win probability.");
+      return;
+    }
+    loadPrediction(matchId);
+    pollTimer = setInterval(() => loadPrediction(matchId), REFRESH_INTERVAL_MS);
+  });
+
+  loadMatches();
+</script>
+</body>
+</html>
